@@ -1,167 +1,85 @@
-# Sicherheit
+VERDICT: CHANGES_REQUESTED
 
-## Kontakt für Schwachstellenmeldungen
-
-Sicherheitslücken und Schwachstellen im Feature-Flag-Service melden Sie bitte
-vertraulich an:
-
-- **E-Mail:** security@example.com
-- **Betreff:** „Security: <Kurzbeschreibung>“
-
-Bitte melden Sie Schwachstellen **nicht** als öffentliches Issue, um ein
-unverantwortliches Offenlegen (Full Disclosure) vor der Bereitstellung eines
-Fixes zu vermeiden.
-
-## Disclosure-Policy
-
-Wir folgen dem Prinzip der **koordinierten Offenlegung** (Coordinated
-Disclosure):
-
-1. Der Meldende erhält innerhalb von **5 Werktagen** eine Empfangsbestätigung.
-2. Wir analysieren die Meldung und bestätigen oder widerlegen die Schwachstelle
-   gegenüber dem Meldenden.
-3. Der Fix wird entwickelt und intern getestet.
-4. Der Meldende erhält die Möglichkeit, den Fix vor der Veröffentlichung zu
-   prüfen.
-5. Nach Freigabe wird der Fix zusammen mit einem Sicherheitshinweis
-   veröffentlicht. Der Meldende wird – sofern gewünscht – namentlich genannt.
-
-Sollten wir keinen Fix bereitstellen können, informieren wir den Meldenden über
-die Gründe.
-
-## Update- und Patch-Prozess
-
-- Sicherheitsrelevante Korrekturen werden priorisiert und unabhängig vom
-  regulären Release-Zyklus veröffentlicht.
-- Jeder Fix durchläuft die bestehende Test-Suite (`go test ./...`) sowie eine
-  Sicherheitsprüfung vor der Freigabe.
-- Die SBOM (`SBOM.md`) wird bei jeder Änderung der Abhängigkeiten aktualisiert.
-- Sicherheitshinweise werden in `SECURITY.md` ergänzt und den Nutzern
-  mitgeteilt.
-
----
-
-# Sicherheitsbericht (Sprint #1)
-
-VERDICT: BLOCKED
+Der Scanner-Output enthält für dieses Projekt (`go-backend`) keinen anwendbaren Security-Scanner. Ich habe daher den vollständigen Produktstand manuell geprüft. Es wurden keine hartkodierten Secrets, keine klassische Injection/RCE, kein Auth-Bypass und keine PII-Leaks im Antwort-Body oder Logging gefunden. Es bestehen jedoch zwei mittlere Härtungsdefizite sowie kleinere Punkte, die vor einem öffentlichen Deployment behoben werden sollten.
 
 ## Sicherheitsbericht
 
-### Zusammenfassung der Prüfung
-Es wurde eine manuelle Sicherheitsanalyse des Go-Backends durchgeführt. Ein automatisierter Scanner war laut Angabe nicht anwendbar; daher beruhen die folgenden Bewertungen ausschließlich auf der Code-Analyse.
+### 1. [Mittel] Fehlende TLS-Pflicht für den API-Key-Transport
+**Betroffene Stelle:** `main.go`, insbesondere der Fall `server.ListenAndServe()` ohne TLS.
 
-Die Umsetzung der Acceptence-Kriterien AC-11 bis AC-14 (RequestBody-Limits, generische JSON-Fehler, Logging ohne Query-String) ist im Code ordnungsgemäß umgesetzt.  
-Dennoch besteht eine **kritische** Lücke im Bereich Authentifizierung und Autorisierung, die einen sicheren Produktivbetrieb ohne zusätzliche Infrastruktur nicht zulässt.
+**Befund:**  
+Der Dienst erwartet einen Bearer-API-Key (`Authorization: Bearer ...`). Wenn `TLS_CERT_FILE`/`TLS_KEY_FILE` nicht gesetzt sind, startet der Server unverschlüsselt auf `:8080`. Damit wird der API-Key bei jedem Request im Klartext übertragen und kann bei einem Netzwerk-Mitschnitt abfließen. Das ist insbesondere dann relevant, wenn der Dienst ohne vorgeschaltetes TLS-Terminierungs-Proxy betrieben wird.
 
-### Prüfbereiche im Detail
+**Konkrete Härtung:**  
+TLS nicht als optionalen Sonderfall behandeln, sondern als sicheren Standard erzwingen:
 
-#### 1. Secrets
-Keine hartkodierten Passwörter, API-Keys, Token oder sonstige Secrets im Code gefunden.  
-Keine Secrets in Logs erkennbar.
+```go
+if certFile == "" || keyFile == "" {
+    log.Fatal("TLS_CERT_FILE und TLS_KEY_FILE müssen gesetzt sein")
+}
+```
 
-#### 2. Injection & Eingaben
-- **SQL/Command Injection:** Nicht anwendbar – keine Datenbank, keine Shell-Aufrufe.
-- **Path Injection:** Die Pfadvariable `key` wird nicht für Dateisystem- oder Pfadoperationen genutzt; sie fließt lediglich in eine In-Memory-Map und in einen Hash ein. Keine direkte Path-Injection.
-- **JSON-Deserialisierung:** Nutzung der sicheren Go-Standardbibliothek; kein erkennbares Unsafe-Deserialization-Risiko.
-- **RequestBody-Limits:** Für `POST /flags` wird `http.MaxBytesReader` verwendet, für `PUT /flags/{key}` ein `io.LimitReader` mit anschließender Längenprüfung. Bei Überschreitung erfolgt Status 413 mit JSON-Fehlerobjekt.
-- **Fehlerantworten:** Alle sichtbaren Fehlerantworten sind generisch (`{"error": ...}`). Interne Fehlermeldungen, Stacktraces oder Dateipfade werden nicht exponiert.
-- **Logging:** Die Middleware protokolliert ausschließlich Methode, URL-Pfad ohne Query-String und Statuscode. Der `user`-Parameter aus `/flags/{key}/evaluate?user=...` wird nicht geloggt.
-
-Schwachstelle in diesem Bereich:  
-- **Unzureichende Key-Validierung** (siehe Finding F003).
-
-#### 3. AuthN/AuthZ
-- **Keine Authentifizierung oder Autorisierung** für irgendeinen Endpunkt vorhanden.  
-- Jeder Client, der den HTTP-Port erreicht, kann Feature-Flags anlegen, ändern, löschen und deren Rollout-Prozent beeinflussen.  
-- Der Server bindet mit `:8080` an **alle** Netzwerkinterfaces (`0.0.0.0`), nicht nur an ein vertrauenswürdiges internes Interface wie `127.0.0.1`.
-
-Dies wird als **kritisch** eingestuft (Finding F001).
-
-#### 4. Abhängigkeiten
-- Es werden ausschließlich Pakete der Go-Standardbibliothek verwendet (`net/http`, `encoding/json`, `sync`, `hash/fnv`, `log`).
-- `go.mod` enthält gemäß Umfang keine externen Third-Party-Dependencies.
-- Keine bekannten CVEs oder veralteten Pakete sichtbar.
-
-#### 5. Konfiguration & Transport
-- Der Dienst läuft als reiner HTTP-Server ohne TLS.
-- Feature-Flag-Konfiguration sowie der `user`-Query-Parameter werden im Klartext übertragen.
-- Keine Sicherheitsheader gesetzt (für eine reine JSON-API weniger kritisch, aber dennoch zu beachten).
-- Kein Rate-Limiting oder sonstiger DoS-Schutz (siehe Finding F004).
+Falls ausdrücklich unverschlüsselter Betrieb für lokale Entwicklung erlaubt sein soll, diesen nur über eine explizite Opt-in-Variable wie `ALLOW_INSECURE_HTTP=true` starten und deutlich warnen. Die bestehenden TLS-Pfade (konfigurierte Zertifikate) bleiben dabei voll funktionsfähig.
 
 ---
 
-### Findings
+### 2. [Mittel] Rate-Limit-Client-Map wächst unbegrenzt
+**Betroffene Stelle:** `internal/api/ratelimit.go`
 
-#### F001 – Fehlende Authentifizierung und Autorisierung (Kritisch / Hoch)
-**Betroffen:**  
-`main.go` (Routing ohne Auth-Middleware), `internal/api/flags_create.go`, `internal/api/flags_update.go`, `internal/api/flags_delete.go`
+**Befund:**  
+Die Middleware speichert pro `r.RemoteAddr` einen `bucket` in der Map `clients`. Es gibt kein Entfernen veralteter Einträge. Bei vielen unterschiedlichen Client-Adressen wächst die Map dauerhaft und hält Speicher – ein langsam wirkender Speicher-DoS. Da `RemoteAddr` bei direkten Zugriffen aus der TCP-Verbindung stammt, ist das nicht beliebig fälschbar, aber das Risiko besteht bei hoher Client-Vielfalt oder über längere Zeit.
 
-**Beschreibung:**  
-Der Feature-Flag-Service stellt ungeschützte Schreibendpunkte bereit. Ein Angreifer, der den Port erreicht, kann:
-- beliebige Flags anlegen (`POST /flags`),
-- bestehende Flags verändern (`PUT /flags/{key}`),
-- Flags löschen (`DELETE /flags/{key}`),
-- die Rollout-Logik und damit das Verhalten der abhängigen Anwendung manipulieren.
+**Konkrete Härtung:**  
+Periodisch veraltete Buckets entfernen, z. B. während eines Requests oder über einen Hintergrund-Ticker:
 
-Da der Server auf `:8080` lauscht, ist er potenziell von außen erreichbar. Eine vorgelagerte Authentifizierung durch ein API-Gateway oder eine private Netzwerksegmentierung ist im Code nicht sichtbar und kann daher nicht vorausgesetzt werden.
+```go
+// nach dem Lock, bei jedem Request oder zeitgesteuert:
+for addr, b := range clients {
+    if now.Sub(b.last) > 5*time.Minute {
+        delete(clients, addr)
+    }
+}
+```
 
-**Konkreter Fix:**  
-- Einführung einer Authentifizierungs-Middleware für **alle** Routen, z. B. statischer Bearer-Token aus einer Umgebungsvariable.  
-- Alternativ: Bind an ein privates Interface (`127.0.0.1` oder internes Pod-Netzwerk) und erzwinge Authentifizierung am vorgelagerten Gateway.  
-- Die direkten Handler-Tests bleiben unverändert lauffähig, wenn die Middleware nur in `main.go` beim Zusammenbau des `http.Handler` eingefügt wird.
-
-**Severity:** Hoch
+Alternativ eine maximale Anzahl Clients einführen und bei Überschreitung die ältesten Einträge verwerfen. Die eigentliche Rate-Limit-Funktion bleibt unverändert.
 
 ---
 
-#### F002 – Unverschlüsselte HTTP-Übertragung (Mittel)
-**Betroffen:**  
-`main.go` (`http.Server{Addr: ":8080", Handler: handler}`)
+### 3. [Niedrig] `RemoteAddr` als Rate-Limit-Identität hinter Proxys
+**Betroffene Stelle:** `internal/api/ratelimit.go`, Zeile mit `r.RemoteAddr`.
 
-**Beschreibung:**  
-Die gesamte Kommunikation erfolgt über unverschlüsseltes HTTP. Alle übermittelten Daten, einschließlich der `user`-IDs bei der Evaluierung und der Feature-Flag-Konfiguration, sind für Angreifer im Netzwerk einsehbar.
+**Befund:**  
+Hinter einem Reverse-Proxy sehen alle Requests für den Backend-Prozess nach derselben Quell-IP aus. Dann teilen sich alle Nutzer denselben Token-Bucket; ein einzelner Angreifer kann das Limit für alle erschöpfen (geteilter Denial-of-Service). Das ist keine direkte Schwachstelle im Code, aber deploymentsensibel.
 
-**Konkreter Fix:**  
-- TLS aktivieren, z. B. durch `server.ListenAndServeTLS(certFile, keyFile)` oder durch einen vorgelagerten TLS-terminierenden Reverse-Proxy.  
-- Alternativ, falls der Dienst ausschließlich in einem isolierten internen Netz ohne sensible Daten betrieben wird, die Bindung auf ein privates Interface beschränken und diese Entscheidung dokumentieren.
-
-**Severity:** Mittel
+**Konkrete Härtung:**  
+`X-Forwarded-For` nur auswerten, wenn der Dienst direkt hinter einem vertrauenswürdigen Proxy läuft, und dabei nur die letzte vom Proxy ergänzte IP verwenden. Alternativ dokumentieren, dass diese Middleware nicht für Proxy-Setups mit gemeinsamer Quell-IP geeignet ist.
 
 ---
 
-#### F003 – Unzureichende Validierung des Feature-Flag-Keys (Niedrig)
-**Betroffen:**  
-`internal/api/flags_create.go` (keine Längen-/Zeichenprüfung), `internal/api/flags_evaluate.go` (Hash-Eingabe), `internal/store/store.go` (Map-Key)
+### 4. [Niedrig] Standard-ServeMux-Fehler sind kein JSON-Fehlerobjekt
+**Betroffene Stelle:** `main.go` / `http.NewServeMux()`, innere Mux-Routen.
 
-**Beschreibung:**  
-Bei `POST /flags` wird nur geprüft, ob `key` nicht leer ist. Es gibt keine Begrenzung der Länge und keine Einschränkung der erlaubten Zeichen. Ein Angreifer (sofern Zugriff besteht) könnte sehr lange oder Sonderzeichen-enthaltende Keys anlegen. Dies kann zu erhöhtem Speicherverbrauch führen und die Verwendung solcher Keys in URL-Pfaden erschweren oder zu unerwartetem Routing-Verhalten führen.
+**Befund:**  
+Unbekannte Pfade oder nicht erlaubte HTTP-Methoden in der inneren Mux werden vom Standard-`http.ServeMux` als Textantworten wie `404 page not found` bzw. `405 Method Not Allowed` beantwortet. Sie enthalten keine internen Details und sind daher kein direktes Sicherheitsleck, verletzen aber die produktspezifische Anforderung an generische JSON-Fehlerobjekte.
 
-**Konkreter Fix:**  
-- Key-Format validieren, z. B. per Regex `^[A-Za-z0-9._-]{1,128}$`.  
-- Diese Einschränkung ist mit der aktuellen Spec kompatibel, da keine anderen Key-Formate gefordert sind.  
-- Bei Verstoß Status 400 mit `{"error":"invalid key format"}` zurückgeben.
-
-**Severity:** Niedrig
+**Konkrete Härtung:**  
+Für die innere Mux einen eigenen Not-Found-/Method-Not-Allowed-Fallback registrieren, der `api.WriteError(w, http.StatusNotFound, "not found")` bzw. `api.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")` nutzt. Dabei weiterhin sicherstellen, dass keine internen Fehlertexte exponiert werden.
 
 ---
 
-#### F004 – Fehlendes Rate-Limiting bzw. Schutz vor Überlastung (Niedrig)
-**Betroffen:**  
-`main.go`, `internal/api/middleware.go`
+## Positiv geprüft
 
-**Beschreibung:**  
-Es gibt zwar Body-Limits für Schreiboperationen, aber keine Begrenzung der Anfragehäufigkeit. Ein erreichbarer Dienst kann durch massenhafte Anfragen (z. B. viele `POST /flags`) Speicher und CPU belasten. Dies ist insbesondere in Kombination mit F001 relevant.
+- Keine hartkodierten Schlüssel oder Passwörter; `API_KEY` kommt ausschließlich aus der Umgebung.
+- Zugriffs-Logging protokolliert nur Methode, Pfad ohne Query-String und Statuscode; der `user`-Parameter wird nicht geloggt.
+- SQL/Command-Deserialisierung nicht vorhanden; JSON-Decoding erfolgt mit Größenbegrenzung (`MaxBytesReader` bzw. `LimitReader`) und liefert 413 bei Überschreitung.
+- Key-Validierung (`^[A-Za-z0-9._-]{1,128}$`) verhindert unerwartete Zeichen; der Schlüssel wird nur als Map-Key verwendet.
+- Rollout-Hash (`FNV-64a`) ist deterministisch und für die Feature-Entscheidung unkritisch.
+- Fehlerantworten der API-Handler sind generisch und enthalten keine Stacktraces oder Dateipfade.
+- `RequireAPIKey` nutzt `subtle.ConstantTimeCompare` für den API-Key-Vergleich.
+- Antworten setzen `X-Content-Type-Options: nosniff` und `Cache-Control: no-store`.
+- Store-Zugriffe sind durch `sync.RWMutex` gegen Race Conditions geschützt.
+- TLS-Konfiguration erzwingt mindestens TLS 1.2, sofern TLS aktiv ist.
 
-**Konkreter Fix:**  
-- Rate-Limiting-Middleware einführen (z. B. Token Bucket pro Client-IP oder API-Key), sofern der Dienst nicht ausschließlich in einem stark abgeschotteten Netzwerk betrieben wird.  
-- Alternativ die Schreibendpunkte nur über ein vorgelagertes Gateway mit eigenem Rate-Limiting erreichbar machen.
+## Fazit
 
-**Severity:** Niedrig
-
----
-
-### Fazit
-Der Code erfüllt die spezifizierten Sicherheitsanforderungen bezüglich Body-Limits, generischer Fehlerantworten und datenschutzfreundlichem Logging.  
-Die **fehlende Authentifizierung und Autorisierung** an den schreibenden Endpunkten stellt jedoch ein erhebliches Risiko dar, das einen sicheren Betrieb ohne zusätzliche Schutzmaßnahmen nicht zulässt. Daher wird das Produkt als **BLOCKED** eingestuft.
-
-Behebung: Mindestens Finding F001 muss umgesetzt werden, bevor der Dienst für den Kunden freigegeben werden kann. F002 sollte im selben Zuge adressiert werden.
+Das Produkt ist für eine interne oder durch TLS-Terminierung geschützte Umgebung grundsätzlich solide. Vor einem ungeschützten öffentlichen Betrieb sollten die beiden mittleren Punkte (TLS-Pflicht und Rate-Limit-Speicherbereinigung) behoben werden. Da keine hochkritische oder kritische Schwachstelle erkennbar ist, lautet das Gesamturteil `CHANGES_REQUESTED`.
