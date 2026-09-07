@@ -9,7 +9,24 @@
       "build": [["go", "build", "./..."]],
       "start": ["go", "run", "."],
       "port": 8080,
-      "health": { "path": "/healthz", "expect_status": [200] }
+      "health": { "path": "/healthz", "expect_status": [200] },
+      "env": {
+        "API_KEY": {
+          "external": true,
+          "degraded_without": "all /flags endpoints answer 503"
+        },
+        "TLS_CERT_FILE": {
+          "external": true,
+          "degraded_without": "TLS disabled, server serves plain HTTP"
+        },
+        "TLS_KEY_FILE": {
+          "external": true,
+          "degraded_without": "TLS disabled, server serves plain HTTP"
+        },
+        "RATE_LIMIT_PER_MINUTE": {
+          "dev": "120"
+        }
+      }
     }
   ]
 }
