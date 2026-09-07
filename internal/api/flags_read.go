@@ -9,13 +9,19 @@ import (
 // ListFlags handles GET /flags.
 func ListFlags(s *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		WriteError(w, http.StatusNotImplemented, "not implemented")
+		WriteJSON(w, http.StatusOK, s.List())
 	}
 }
 
 // GetFlag handles GET /flags/{key}.
 func GetFlag(s *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		WriteError(w, http.StatusNotImplemented, "not implemented")
+		key := r.PathValue("key")
+		f, ok := s.Get(key)
+		if !ok {
+			WriteError(w, http.StatusNotFound, "flag not found")
+			return
+		}
+		WriteJSON(w, http.StatusOK, f)
 	}
 }
