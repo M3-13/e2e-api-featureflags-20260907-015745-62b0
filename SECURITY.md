@@ -1,3 +1,48 @@
+# Sicherheit
+
+## Kontakt für Schwachstellenmeldungen
+
+Sicherheitslücken und Schwachstellen im Feature-Flag-Service melden Sie bitte
+vertraulich an:
+
+- **E-Mail:** security@example.com
+- **Betreff:** „Security: <Kurzbeschreibung>“
+
+Bitte melden Sie Schwachstellen **nicht** als öffentliches Issue, um ein
+unverantwortliches Offenlegen (Full Disclosure) vor der Bereitstellung eines
+Fixes zu vermeiden.
+
+## Disclosure-Policy
+
+Wir folgen dem Prinzip der **koordinierten Offenlegung** (Coordinated
+Disclosure):
+
+1. Der Meldende erhält innerhalb von **5 Werktagen** eine Empfangsbestätigung.
+2. Wir analysieren die Meldung und bestätigen oder widerlegen die Schwachstelle
+   gegenüber dem Meldenden.
+3. Der Fix wird entwickelt und intern getestet.
+4. Der Meldende erhält die Möglichkeit, den Fix vor der Veröffentlichung zu
+   prüfen.
+5. Nach Freigabe wird der Fix zusammen mit einem Sicherheitshinweis
+   veröffentlicht. Der Meldende wird – sofern gewünscht – namentlich genannt.
+
+Sollten wir keinen Fix bereitstellen können, informieren wir den Meldenden über
+die Gründe.
+
+## Update- und Patch-Prozess
+
+- Sicherheitsrelevante Korrekturen werden priorisiert und unabhängig vom
+  regulären Release-Zyklus veröffentlicht.
+- Jeder Fix durchläuft die bestehende Test-Suite (`go test ./...`) sowie eine
+  Sicherheitsprüfung vor der Freigabe.
+- Die SBOM (`SBOM.md`) wird bei jeder Änderung der Abhängigkeiten aktualisiert.
+- Sicherheitshinweise werden in `SECURITY.md` ergänzt und den Nutzern
+  mitgeteilt.
+
+---
+
+# Sicherheitsbericht (Sprint #1)
+
 VERDICT: BLOCKED
 
 ## Sicherheitsbericht
