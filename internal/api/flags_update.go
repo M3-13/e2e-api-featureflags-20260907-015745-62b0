@@ -2,7 +2,7 @@ package api
 
 import (
 	"encoding/json"
-	"errors"
+	"io"
 	"net/http"
 
 	"featureflags/internal/store"
@@ -19,14 +19,18 @@ type updateFlagRequest struct {
 // UpdateFlag handles PUT /flags/{key}.
 func UpdateFlag(s *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if len(body) > maxBodyBytes {
+			WriteError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+
 		var req updateFlagRequest
-		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			var maxErr *http.MaxBytesError
-			if errors.As(err, &maxErr) {
-				WriteError(w, http.StatusRequestEntityTooLarge, "request body too large")
-				return
-			}
+		if err := json.Unmarshal(body, &req); err != nil {
 			WriteError(w, http.StatusBadRequest, "invalid JSON")
 			return
 		}
@@ -57,7 +61,11 @@ func UpdateFlag(s *store.Store) http.HandlerFunc {
 			rollout = *req.RolloutPercent
 		}
 
-		updated, _ := s.Update(key, *req.Enabled, description, rollout)
+		updated, ok := s.Update(key, *req.Enabled, description, rollout)
+		if !ok {
+			WriteError(w, http.StatusNotFound, "flag not found")
+			return
+		}
 		WriteJSON(w, http.StatusOK, updated)
 	}
 }
