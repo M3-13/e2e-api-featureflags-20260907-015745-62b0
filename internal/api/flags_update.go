@@ -8,7 +8,7 @@ import (
 	"featureflags/internal/store"
 )
 
-const maxBodyBytes = 1 << 20
+const maxUpdateBodyBytes = 1 << 20
 
 type updateFlagRequest struct {
 	Enabled        *bool   `json:"enabled"`
@@ -19,12 +19,12 @@ type updateFlagRequest struct {
 // UpdateFlag handles PUT /flags/{key}.
 func UpdateFlag(s *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxUpdateBodyBytes+1))
 		if err != nil {
 			WriteError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
-		if len(body) > maxBodyBytes {
+		if len(body) > maxUpdateBodyBytes {
 			WriteError(w, http.StatusRequestEntityTooLarge, "request body too large")
 			return
 		}
