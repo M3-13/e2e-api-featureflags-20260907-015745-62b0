@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 
 	"featureflags/internal/store"
 )
 
 const maxBodyBytes = 1 << 20
+
+var keyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 // CreateFlag handles POST /flags.
 func CreateFlag(s *store.Store) http.HandlerFunc {
@@ -28,6 +31,10 @@ func CreateFlag(s *store.Store) http.HandlerFunc {
 
 		if in.Key == "" {
 			WriteError(w, http.StatusBadRequest, "key is required")
+			return
+		}
+		if !keyPattern.MatchString(in.Key) {
+			WriteError(w, http.StatusBadRequest, "invalid key format")
 			return
 		}
 		if in.RolloutPercent < 0 || in.RolloutPercent > 100 {

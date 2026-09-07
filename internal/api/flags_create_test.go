@@ -76,6 +76,34 @@ func TestCreateFlag_EmptyKey(t *testing.T) {
 	}
 }
 
+func TestCreateFlag_KeyWithSpace(t *testing.T) {
+	rec := doCreate(t, `{"key":"feature A","enabled":true}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestCreateFlag_KeyTooLong(t *testing.T) {
+	rec := doCreate(t, `{"key":"`+strings.Repeat("a", 129)+`","enabled":true}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestCreateFlag_KeyInvalidChars(t *testing.T) {
+	rec := doCreate(t, `{"key":"feature@bad!","enabled":true}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestCreateFlag_ValidKeyFormat(t *testing.T) {
+	rec := doCreate(t, `{"key":"feature.x_1-2","enabled":true}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+}
+
 func TestCreateFlag_InvalidJSON(t *testing.T) {
 	rec := doCreate(t, `{not json`)
 	if rec.Code != http.StatusBadRequest {
