@@ -1,167 +1,114 @@
 VERDICT: CHANGES_REQUESTED
 
-## Zusammenfassung
+## Gesamtbewertung
 
-Geprüft wurde der vorliegende Go-Backend-Dienst vom Typ `go-backend`. Reine REST-API ohne Endnutzer-UI, daher entfallen Pflichttexte, Cookie-/Consent-Pflichten, EU AI Act und Barrierefreiheit. Relevant sind DSGVO und EU Cyber Resilience Act (CRA).
+Der Dienst setzt viele Security-Baselines bereits sauber um: generische JSON-Fehler ohne interne Details, Body-Limits für POST/PUT, Logging ohne Query-String, Constant-Time-Vergleich für den API-Key, Server-Timeouts, optionale TLS-Konfiguration mit `MinVersion: TLS1.2`, Rate-Limiting sowie ein threadsicherer Store. Als reines `go-backend` ohne Endnutzer-UI bestehen keine Impressums-, Cookie-, Datenschutzerklärungs- oder Barrierefreiheitspflichten im Code.
 
-Positiv hervorzuheben:
-- Body-Limit für POST und PUT funktioniert und liefert Status 413.
-- Fehlerantworten sind generisch und enthalten keine Stacktraces, Dateipfade oder internen Go-Fehlermeldungen.
-- Logging-Middleware erfüllt AC-13/AC-14: Es wird ausschließlich Methode, Pfad ohne Query-String und Statuscode geloggt.
-- In-Memory-Store ist mit `sync.RWMutex` gegen Race Conditions geschützt.
-- Die Nutzer-ID wird im Evaluate-Pfad nicht gespeichert und nicht geloggt.
-
-Es bestehen jedoch behebbare Sicherheits- und Datenschutzlücken, insbesondere fehlende Authentifizierung, fehlender TLS-Schutz, fehlende CRA-Dokumentation und unzureichende Betriebshinweise für den Umgang mit personenbezogenen Eingaben. Kein fundamentaler Blocker, da keine PII im Klartext geloggt oder persistent gespeichert wird.
+Offen sind zwei behebbare Mängel: eine unbefristete Speicherung von IP-Adressen im Rate-Limiter sowie ein unverschlüsselter HTTP-Standardbetrieb. Beides ist kein fundamentaler Blocker, muss aber vor Auslieferung behoben werden.
 
 ---
 
-## 1. EU Cyber Resilience Act (CRA)
+## 1. DSGVO
 
-### CRA-1 — Hoch — Fehlende Authentifizierung und Autorisierung
-**Datei:** `main.go`, `internal/api/middleware.go`
+### Befund DSGVO-1 — Unbefristete IP-Speicherung im Rate-Limiter (hoch)
 
-Sämtliche Endpunkte außer `/healthz` sind ungeschützt. Jeder, der Netzwerkzugriff auf den Dienst hat, kann Flags anlegen, ändern, löschen und Evaluate-Aufrufe mit beliebigen Nutzer-IDs ausführen. Das verletzt Security by Design/Default (CRA) und gefährdet Integrität und Vertraulichkeit.
+**Datei:** `internal/api/ratelimit.go`
 
-**Maßnahme:**
-- Middleware für API-Key/Bearer-Token implementieren, z. B. `RequireAPIKey(key string)` oder `RequireBearerToken`.
-- Mindestens POST/PUT/DELETE schützen; Evaluate je nach Einsatz ebenfalls.
-- Routen in `main.go` entsprechend wrappen.
+Die Middleware speichert für jeden Client einen Eintrag in der Map `clients`, identifiziert über `r.RemoteAddr`. `r.RemoteAddr` enthält die IP-Adresse und den Port des Clients und ist damit ein personenbezogenes Datum. Die Map wird niemals bereinigt und besitzt keine Obergrenze.
+
+Das verletzt:
+
+- Art. 5 Abs. 1 lit. c DSGVO — Datenminimierung, da IP-Adressen ohne Begrenzung gesammelt werden.
+- Art. 5 Abs. 1 lit. e DSGVO — Speicherbegrenzung, da es keine Löschroutine oder Aufbewahrungsfrist gibt.
+
+Zusätzlich entsteht ein praktischer DoS-Vektor: Ein Angreifer kann mit vielen unterschiedlichen Quell-IP-Adressen die Map unbegrenzt wachsen lassen.
+
+**Remedy:**
+
+- In `internal/api/ratelimit.go` eine TTL einführen, z. B. 5 Minuten Inaktivität pro Bucket.
+- Beim Refill oder bei periodischen Aufräumläufen veraltete Einträge löschen.
+- Eine konfigurierbare Obergrenze `maxClients` vorsehen, z. B. 10.000; bei Überschreitung älteste Einträge verwerfen.
+- Optional die IP nur als salted Hash speichern, z. B. `sha256(remoteAddr + salt)`, um das Datenschutzrisiko weiter zu senken.
+- Die Aufbewahrungsfrist in `SECURITY.md` bzw. `COMPLIANCE.md` dokumentieren.
 
 ---
 
-### CRA-2 — Hoch — Keine Transportverschlüsselung (TLS)
+### Befund DSGVO-2 — Unverschlüsselter HTTP-Standardbetrieb möglich (mittel)
+
 **Datei:** `main.go`
 
-Der Server startet mit `http.ListenAndServe` auf `:8080` ohne TLS. Werden Flag-Daten oder die Nutzer-ID über ein Netz übertragen, geschieht dies im Klartext. Das verletzt CRA-Security-Defaults und DSGVO Art. 32.
+Der Server startet standardmäßig über `server.ListenAndServe()` ohne TLS, wenn `TLS_CERT_FILE` und `TLS_KEY_FILE` nicht gesetzt sind. Über diese unverschlüsselte Verbindung würden der Bearer-API-Key und der `user`-Query-Parameter übertragen.
 
-**Maßnahme:**
-- Entweder `server.ListenAndServeTLS("cert.pem", "key.pem")` verwenden oder
-- einen vorgeschalteten TLS-Proxy verpflichtend dokumentieren (z. B. in `README.md`).
-- Zusätzlich `http.Server.TLSConfig` und sichere TLS-Mindestversionen konfigurieren.
+Sofern der Dienst nicht ausschließlich hinter einem TLS-terminierenden Reverse Proxy in einem vertrauenswürdigen Netz betrieben wird, verletzt dies Art. 32 DSGVO.
 
----
+**Remedy:**
 
-### CRA-3 — Mittel — Fehlende Server-Timeouts
-**Datei:** `main.go`
-
-Der `http.Server` hat keine `ReadTimeout`, `ReadHeaderTimeout`, `WriteTimeout` oder `IdleTimeout`. Langsame Clients können Verbindungen lange blockieren und Ressourcen erschöpfen.
-
-**Maßnahme:**
-```go
-server := &http.Server{
-    Addr:              ":8080",
-    Handler:           handler,
-    ReadHeaderTimeout: 5 * time.Second,
-    ReadTimeout:       10 * time.Second,
-    WriteTimeout:      10 * time.Second,
-    IdleTimeout:       60 * time.Second,
-}
-```
-`import "time"` in `main.go` ergänzen.
+- In `main.go` TLS zum sicheren Standard machen: Ohne `TLS_CERT_FILE`/`TLS_KEY_FILE` nur auf `127.0.0.1:8080` lauschen oder den unverschlüsselten Betrieb nur mit expliziter Umgebungsvariable wie `INSECURE_HTTP=1` erlauben.
+- Alternativ in `README.md` und `SECURITY.md` verbindlich dokumentieren, dass der Dienst ausschließlich hinter einem TLS-terminierenden Edge-Proxy exponiert werden darf.
+- Der Produktfluss bleibt dabei vollständig funktionsfähig; TLS ändert nur den Transport, nicht die Routen.
 
 ---
 
-### CRA-4 — Mittel — Fehlende SBOM und Sicherheitsdokumentation
-**Datei:** fehlende `SBOM.md`/`sbom.json` und `SECURITY.md`
+### Hinweis DSGVO-3 — Rechtsgrundlage für die Verarbeitung der Nutzer-ID dokumentieren (niedrig)
 
-Im Branch ist keine SBOM- oder Security-Dokumentation sichtbar. Der CRA verlangt für Produkte mit digitalen Elementen eine Software Bill of Materials, dokumentierte Sicherheitsanforderungen, einen Schwachstellenmeldeprozess und Update-/Patch-Fähigkeit.
+**Datei:** `internal/api/flags_evaluate.go`
 
-**Maßnahme:**
-- `SBOM.md` oder `sbom.json` (CycloneDX/SPDX) mit Modul `featureflags`, Go-Version und Abhängigkeiten (hier: nur Standardbibliothek) anlegen.
-- `SECURITY.md` mit Kontakt für Schwachstellenmeldungen, Disclosure-Policy und Update-Prozess ergänzen.
+Der Parameter `?user=...` ist personenbezogen. Die Implementierung verarbeitet ihn minimal, speichert ihn nicht und die Logging-Middleware protokolliert den Query-String nicht. Die Rechtsgrundlage und eine etwaige Auftragsverarbeitung sind aber organisatorisch beim Betreiber nachzuweisen.
 
----
+**Empfehlung:**
 
-### CRA-5 — Mittel — Keine Rate-Limitierung
-**Datei:** `main.go` oder `internal/api/middleware.go`
-
-Der Evaluate-Endpoint kann unbegrenzt mit unterschiedlichen `user`-Werten aufgerufen werden. Ohne Auth und Rate-Limit erleichtert das Missbrauch und unerwünschte Auswertungen.
-
-**Maßnahme:**
-- Rate-Limit-Middleware (z. B. Token-Bucket pro Client-IP/API-Key) vor die kritischen Routen schalten.
-- Limits in Betriebsdokumentation konfigurierbar machen.
+- In `COMPLIANCE.md` die Rechtsgrundlage für die Verarbeitung der Nutzer-ID dokumentieren.
+- Optional bei künftigen Versionen einen `X-User-ID`-Header statt Query-Parameter vorsehen, um das Risiko einer versehentlichen Protokollierung in vorgelagerten Proxy-Logs weiter zu reduzieren.
 
 ---
 
-### CRA-6 — Niedrig — Härtungs-Header für JSON-Antworten
-**Datei:** `internal/api/response.go`
+## 2. EU Cyber Resilience Act (CRA)
 
-Es wird nur `Content-Type: application/json` gesetzt. Für eine JSON-API empfiehlt sich zumindest `X-Content-Type-Options: nosniff`.
+### Befund CRA-1 — Unbegrenzte Client-Map als Ressourcenerschöpfung (hoch)
 
-**Maßnahme:**
-- In `WriteJSON` zusätzlich `w.Header().Set("X-Content-Type-Options", "nosniff")` setzen.
-- Optional `Cache-Control: no-store` für flag- und evaluate-Antworten.
+**Datei:** `internal/api/ratelimit.go`
 
----
+Die unbegrenzte `clients`-Map ist auch unter CRA-Gesichtspunkten problematisch. Security by design/default verlangt Schutz vor Ressourcenerschöpfung durch viele unterschiedliche Quell-Adressen.
 
-## 2. DSGVO
+**Remedy:**
 
-### DSGVO-1 — Mittel — Nutzer-ID im Query-String und ohne TLS
-**Datei:** `internal/api/flags_evaluate.go`, `main.go`
-
-`EvaluateFlag` liest `r.URL.Query().Get("user")`. Die eigene Logging-Middleware loggt den Pfad ohne Query-String (positiv, AC-14 erfüllt). Vorgelagerte Systeme, Proxies oder externe Access-Logs können den Query-String jedoch erfassen. In Kombination mit fehlendem TLS (CRA-2) ist die Vertraulichkeit der Nutzer-ID nicht ausreichend geschützt.
-
-**Maßnahme:**
-- TLS wie bei CRA-2 umsetzen.
-- In `README.md` oder `AGENTS.md` verbindlich festlegen, dass `user` ausschließlich eine pseudonyme, nicht direkt rückführbare ID sein darf (keine E-Mail, Telefonnummer, Personalnummer o. Ä.).
-- Optional: künftige API-Version auf POST mit Body oder Header-Feld umstellen, falls der API-Vertrag das zulässt.
+- Wie bei DSGVO-1: TTL, periodische Bereinigung und `maxClients`-Obergrenze einführen.
+- Den Mechanismus in `SECURITY.md` als dokumentierte Sicherheitseigenschaft beschreiben.
 
 ---
 
-### DSGVO-2 — Mittel — Rechtsgrundlage und Verarbeitungsdokumentation nicht sichtbar
-**Datei:** `README.md` / `AGENTS.md`
+### Positivbefunde CRA
 
-Der Dienst verarbeitet im Evaluate-Pfad Nutzer-IDs transient. Eine dokumentierte Rechtsgrundlage (Art. 6 DSGVO), der Verarbeitungszweck und ein Verantwortlicher sind im vorgelegten Code nicht sichtbar. Da `README.md` existiert, aber sein Inhalt nicht Teil des Reviews war, ist dies nicht abschließend prüfbar.
+Folgende Maßnahmen sind bereits CRA-konform oder unterstützen die Konformität:
 
-**Maßnahme:**
-- Datenschutzabschnitt im `README.md` oder `AGENTS.md` ergänzen:
-  - Zweck: deterministische Feature-Flag-Auswertung.
-  - Rechtsgrundlage: z. B. berechtigtes Interesse Art. 6 Abs. 1 lit. f DSGVO oder Auftragsverarbeitungsvereinbarung je nach Einsatz.
-  - Datenarten: undurchsichtige `user`-IDs.
-  - Speicherdauer: keine Persistenz der Nutzer-ID.
-  - Betroffenenrechte: Hinweis, wie Anfragen gestellt werden können.
-
----
-
-### DSGVO-3 — Mittel — `description` ohne Nutzungsbeschränkung und ohne Löschkonzept
-**Datei:** `internal/api/flags_create.go`, `internal/api/flags_update.go`, `internal/store/store.go`
-
-POST und PUT erlauben beliebige `description`-Strings bis zum Body-Limit. Beschreibungen werden im In-Memory-Store bis DELETE oder Neustart gespeichert. Enthalten sie personenbezogene Daten, fehlt Datenminimierung und ein klar dokumentiertes Löschkonzept.
-
-**Maßnahme:**
-- In `README.md` oder API-Doku verbindlich festlegen, dass `description` ausschließlich technische Metadaten ohne Personenbezug enthalten darf.
-- Optional: Validierung auf offensichtliche PII-Muster oder striktere Längenbegrenzung für `description` einführen.
-
----
-
-### DSGVO-4 — Niedrig — Kein expliziter Löschhinweis für mögliche PII in Flag-Daten
-**Datei:** `README.md`
-
-`DELETE /flags/{key}` existiert und entfernt das Flag, aber es fehlt eine Betriebsanweisung, was bei Verdacht auf personenbezogene Daten in Beschreibungen zu tun ist.
-
-**Maßnahme:**
-- Im Datenschutzabschnitt des `README.md` einen Hinweis aufnehmen, dass verdächtige Flag-Daten unverzüglich via DELETE entfernt werden müssen.
+- Body-Limits über `http.MaxBytesReader` und `io.LimitReader`.
+- Server-Timeout-Konfiguration in `main.go`.
+- TLS-Mindestversion `tls.VersionTLS12`.
+- Generische Fehlertexte ohne Stacktraces oder Dateipfade.
+- `X-Content-Type-Options: nosniff` und `Cache-Control: no-store`.
+- Constant-Time-Vergleich des API-Keys.
+- Keine externen Drittanbieter-Abhängigkeiten sichtbar, was die SBOM-Pflicht vereinfacht; `SBOM.md` ist vorhanden.
 
 ---
 
 ## 3. EU AI Act
 
-Kein KI-Feature sichtbar. Keine Pflichten.
+Nicht einschlägig. Der Dienst enthält keine KI-Funktion und fällt damit nicht in den Anwendungsbereich des AI Act.
 
 ---
 
-## 4. Pflichttexte & UI
+## 4. Pflichttexte und UI
 
-Reines Backend ohne Endnutzer-UI. Keine Legal-Notice-, Cookie-/Consent- oder AGB-Pflichten. Keine Befunde.
+Nicht einschlägig. Reines Backend ohne Endnutzer-UI. Es bestehen keine Pflichten zu Impressum, Datenschutzerklärung, Cookie-Banner, AGB oder Widerrufsbelehrung im Code.
 
 ---
 
 ## 5. Barrierefreiheit
 
-Keine öffentliche Web-UI vorhanden. Nicht anwendbar.
+Nicht einschlägig. Keine öffentliche Web-UI vorhanden. WCAG/BITV/EAA-Pflichten greifen nicht.
 
 ---
 
-## Gesamteinschätzung
+## Fazit
 
-Behebbare Lücken bei Authentifizierung, TLS, Server-Härtung und CRA-Dokumentation sowie ergänzungsbedürftige Datenschutzhinweise. Es wurden keine personenbezogenen Daten im Klartext geloggt oder persistent gespeichert. Daher kein fundamentaler Verstoß, aber vor Marktfreigabe sind die genannten Maßnahmen umzusetzen.
+Keine fundamentalen Rechtsverletzungen, die einen sofortigen Stopp erfordern. Zwei behebbare Mängel müssen vor Marktfreigabe behoben werden: die unbefristete IP-Speicherung im Rate-Limiter und der unverschlüsselte HTTP-Standardbetrieb. Danach ist der Dienst aus Sicht der geprüften Bereiche marktreif.
